@@ -191,7 +191,78 @@ what the question actually called for.
   mitsogo") now answers in pure prose with zero list markup, confirming formatting now
   follows the query instead of defaulting to structure everywhere.
 
+## Architecture / Flow — addendum: silent-retry streaming + real hallucination fix
+
+Real bug report from a multi-turn conversation: after several valid grounded turns
+about an uploaded appointment-letter PDF, asking "Where she can apply new jobs,
+suggest good platforms for it" got a fully fabricated answer — six invented job-platform
+recommendations and, on the follow-up "list the links for those," six **fabricated
+URLs** (including a fake LinkedIn profile URL) presented as fact. The user also
+separately reported that the retry loop was visibly "looping 3 times" on screen.
+
+Both symptoms trace back to the same two root causes:
+
+1. **Visible retry flicker**: every attempt streamed live via `onDelta`, including ones
+   later discarded by `evaluateAnswer`'s score — so a weakly-grounded query visibly
+   typed out an answer, wiped it (`onRetry` cleared the text), and retyped it up to 3
+   times before landing. Fixed in `src/lib/rag/answerWithRetry.ts`: **only the first
+   attempt streams live now**; retries run silently (no `onDelta`), and if a later
+   attempt wins, it's delivered once via `onReplace` instead of restreaming. Dropped
+   the `onRetry` callback entirely (no longer needed) — removed from
+   `AnswerWithRetryCallbacks`, `src/app/api/chat/route.ts`, and the `retry` SSE event
+   from `ChatPanel.tsx`.
+2. **Real hallucination, not just a scoring miss**: the underlying query ("job
+   platforms") isn't covered by any document, but `retrieveContext`'s "always keep the
+   single top scorer" rule (documented in `plans/005`) still handed the model *some*
+   excerpt (an HR/appointment-letter chunk that superficially cleared the score
+   threshold) — and instead of declining, gpt-4o-mini treated the loosely-related
+   excerpt plus prior conversation turns as license to keep helpfully elaborating with
+   its own general knowledge, inventing platform names and (on the follow-up) URLs to
+   match. Fixed two ways:
+   - `answerWithRetry.ts`: when `retrieveContext` returns **zero** chunks for an
+     attempt, the LLM is never called at all for that attempt — a fixed, deterministic
+     decline (`"I couldn't find anything about that in your documents."`, score 10) is
+     used instead, since asking the model to answer from nothing is exactly how this
+     class of hallucination starts. This also short-circuits the retry loop instantly
+     for genuinely out-of-scope questions rather than burning attempts on a case
+     retrying can't fix.
+   - `src/lib/llm/answerQuestion.ts`: strengthened `SYSTEM_PROMPT` with explicit rules
+     against substituting outside knowledge (naming this exact failure mode: "external
+     websites/tools/platforms... even if the conversation history makes it feel like a
+     natural next thing to offer") and against letting prior conversation turns license
+     continued elaboration once the current excerpts run out. Added a new few-shot pair
+     modeling the exact repro shape (a request for external platform recommendations
+     against an unrelated appointment-letter excerpt → decline).
+   - `src/lib/llm/judgeAnswer.ts`: `evaluateAnswer`'s grading prompt now explicitly
+     scores 0-2 (not just "low") for any specific fact/name/number/URL/recommendation
+     stated in the answer but absent from the excerpts, naming external-site
+     recommendations and continued-elaboration-from-history as concrete examples of
+     this — as a second line of defense behind the prompt fix above.
+
+Live-verified: replayed the exact repro conversation (via `history` in the request
+body) — "suggest good platforms" now correctly declines with zero sources on the first
+attempt (no `replace` event, i.e. no retry was even needed); "list the links for those"
+now correctly says no links are present rather than inventing any, citing an actual
+resume excerpt that happens to name real recruiting tools (Zoho Recruit, LinkedIn
+Recruiter, Naukri) without fabricating URLs for them. Re-verified no regression on the
+recency-match fix (`plans/005`'s third bug) and the out-of-scope-decline case (which now
+returns instantly via the zero-chunks short-circuit instead of an LLM-generated
+decline).
+
 ## Task checklist
+
+### Silent-retry streaming + hallucination fix
+- [x] `answerWithRetry()` only streams attempt 1 live; retries run silently, final
+      result delivered via `onReplace` if it wasn't attempt 1
+- [x] `onRetry` callback/event removed end-to-end (route, client) — no longer needed
+- [x] Zero-chunk attempts skip the LLM entirely, returning a deterministic decline
+- [x] `answerQuestion` `SYSTEM_PROMPT` strengthened against outside-knowledge
+      substitution and history-driven over-elaboration; new few-shot added
+- [x] `evaluateAnswer` grading prompt scores fabricated facts/URLs/recommendations 0-2
+- [x] `bunx tsc --noEmit` / `bun run lint` clean
+- [x] Live-verified: replayed the exact repro conversation via `history` — both the
+      "suggest platforms" and "list the links" turns now decline/stay grounded instead
+      of fabricating; no regression on the recency-match fix or out-of-scope decline
 
 ### Citations + retry loop
 - [x] `answerQuestion()` switched to structured output (`{ answer, usedExcerpts }`) and
@@ -255,7 +326,8 @@ what the question actually called for.
   in one structured-output call (0-10 relevance grading + citation identification)
 - `src/lib/rag/queryTransform.ts` — added `refineQuery()`
 - `src/lib/rag/answerWithRetry.ts` — new; retrieve→stream-answer→evaluate retry
-  orchestrator with `onDelta`/`onRetry`/`onReplace` callbacks
+  orchestrator with `onDelta`/`onReplace` callbacks (only attempt 1 streams live;
+  zero-chunk attempts skip the LLM and return a deterministic decline)
 - `src/app/api/chat/route.ts` — rewritten as an SSE endpoint over `answerWithRetry`
 - `src/types/chat.ts` — `ChatAssistantMessage` now has `text: string` + `isStreaming?`
   instead of `paragraphs: ChatAssistantParagraph[]`
