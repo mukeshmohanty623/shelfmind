@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# shelfmind
 
-## Getting Started
+A NotebookLM-style app: upload PDFs, paste web links or plain text, and chat
+over them. Sources are chunked, embedded, and indexed into a vector store via
+a background job queue, then retrieved and cited when you ask questions.
 
-First, run the development server:
+## Features
+
+- **Multiple source types** — PDF upload, web URL, or raw pasted text, each
+  indexed through the same chunk → embed → store pipeline.
+- **Background indexing** — uploads are queued (BullMQ/Redis) and processed by
+  a separate worker, so the UI stays responsive; resource status polls live
+  from the queue (`queued` → `active` → `completed`/`failed`).
+- **Grounded chat with citations** — questions are answered only from
+  retrieved excerpts, with pinpoint citations back to the source chunk. A
+  retry loop re-evaluates weak answers, and out-of-scope questions get a
+  deterministic decline instead of a hallucinated one.
+- **No permanent file storage** — uploaded bytes/HTML are streamed straight
+  through the job payload and discarded after indexing; nothing touches disk.
+
+## Stack
+
+Next.js 16 (App Router) + TypeScript + Tailwind v4, shadcn/ui, BullMQ +
+Redis for the job queue, Qdrant for vector storage, OpenAI for embeddings and
+chat. Package manager is [bun](https://bun.sh).
+
+## Running locally
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+bun install
+cp .env.local.example .env.local   # fill in OPENAI_API_KEY
+bun run docker:up                  # starts redis + qdrant
+bun run dev                        # terminal 1 — Next.js
+bun run worker                     # terminal 2 — required for indexing to happen
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). Both `dev` and `worker`
+need to stay running for uploads to actually get indexed.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Variable            | Purpose                              | Default                  |
+| ------------------- | ------------------------------------- | ------------------------ |
+| `OPENAI_API_KEY`     | Embeddings + chat completions         | *(required)*             |
+| `REDIS_URL`          | BullMQ job queue                      | `redis://localhost:6379` |
+| `QDRANT_URL`         | Vector store                          | `http://localhost:6333`  |
+| `QDRANT_COLLECTION`  | Qdrant collection name                | `documents`               |
 
-## Learn More
+### Other scripts
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+bun run lint          # eslint
+bunx tsc --noEmit      # typecheck
+bun run docker:down    # stop redis + qdrant
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Architecture notes
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Deeper design decisions (why resources aren't stored on disk, why the worker
+never touches `data/resources.json`, the retrieval/retry/citation pipeline,
+etc.) are written up as they're built in [`plans/`](./plans) — see
+[`plans/README.md`](./plans/README.md) for the convention, and
+[`CLAUDE.md`](./CLAUDE.md) for the full set of stack/architecture notes.
