@@ -6,10 +6,11 @@ import type { ResourceStatusResponse } from "@/types/resource";
 const POLL_INTERVAL_MS = 2000;
 
 export function useResourcePolling(jobId: string) {
-  const [status, setStatus] = useState<ResourceStatusResponse>({
-    status: "queued",
-    progress: 0,
-  });
+  // Starts unknown rather than defaulting to "queued" — most resources loaded on a page
+  // refresh already finished indexing long ago, and assuming "queued" makes them flash
+  // an "Indexing..." state for every already-completed resource until the first poll
+  // resolves.
+  const [status, setStatus] = useState<ResourceStatusResponse | null>(null);
   const settled = useRef(false);
 
   useEffect(() => {

@@ -35,7 +35,9 @@ export function ResourceListItem({
   faviconUrl?: string;
   onDeleted: (id: string) => void;
 }) {
-  const { status, error } = useResourcePolling(jobId);
+  const polled = useResourcePolling(jobId);
+  const status = polled?.status;
+  const error = polled?.error;
   const isIndexing = status === "queued" || status === "active";
   const [isDeleting, setIsDeleting] = useState(false);
   const [faviconFailed, setFaviconFailed] = useState(false);

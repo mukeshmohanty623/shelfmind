@@ -14,7 +14,7 @@ export default function Home() {
       </Show>
       <Show when="signed-out">
         <div className="flex min-h-0 flex-1 items-center justify-center bg-background p-4">
-          <SignIn />
+          <SignIn routing="hash" />
         </div>
       </Show>
     </>
