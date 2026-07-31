@@ -23,6 +23,7 @@ const MAX_TEXT_LENGTH = 100_000;
 
 export interface UploadedResource {
   id: string;
+  userId: string;
   jobId: string;
   filename: string;
   sourceType: ResourceSourceType;

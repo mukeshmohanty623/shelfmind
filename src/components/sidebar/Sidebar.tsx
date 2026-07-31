@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { UserButton } from "@clerk/nextjs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AddResourceModal, type UploadedResource } from "@/components/sidebar/AddResourceModal";
@@ -35,7 +36,10 @@ export function Sidebar({ onLinkClick }: { onLinkClick?: () => void } = {}) {
     <aside className="flex h-full w-full shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar p-4">
       <div className="flex items-center justify-between gap-2">
         <span className="font-heading text-xl font-semibold text-sidebar-foreground">Noteboolm</span>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <UserButton />
+        </div>
       </div>
 
       <AddResourceModal onUploaded={handleUploaded} />

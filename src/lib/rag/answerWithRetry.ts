@@ -2,94 +2,101 @@ import { analyzeQuery, condenseQuery, refineQuery } from "@/lib/rag/queryTransfo
 import { retrieveContext, type RetrievedChunk } from "@/lib/rag/retrieve";
 import { answerQuestion } from "@/lib/llm/answerQuestion";
 import { evaluateAnswer } from "@/lib/llm/judgeAnswer";
-import type { ChatTurn } from "@/types/chat";
+import { answerFromKnowledge } from "@/lib/llm/answerFromKnowledge";
+import type { AnswerMode, ChatTurn, WebSource } from "@/types/chat";
 
-const MAX_ATTEMPTS = 3;
+const MAX_DOC_ATTEMPTS = 2;
 const MIN_ACCEPTABLE_SCORE = 6;
-const NO_CONTEXT_ANSWER = "I couldn't find anything about that in your documents.";
+
+const REPLAY_BATCH_WORDS = 3;
+const REPLAY_DELAY_MS = 12;
 
 export interface AnswerWithRetryResult {
   answer: string;
+  mode: AnswerMode;
   citedChunks: RetrievedChunk[];
-  score: number;
-  attempts: number;
+  webSources: WebSource[];
 }
 
 export interface AnswerWithRetryCallbacks {
-  /** A token chunk of the first attempt's answer, as it streams in. */
+  /** Token chunks of the final answer, as it streams to the caller. */
   onDelta?: (text: string) => void;
-  /**
-   * Attempts exhausted or a later attempt won out, and it wasn't the one streamed live
-   * — caller should show `fullAnswer` as the final content in one shot.
-   */
-  onReplace?: (fullAnswer: string) => void;
 }
 
 /**
- * Retrieve → answer → evaluate, retrying with a reformulated search query when the
- * evaluation scores the answer below MIN_ACCEPTABLE_SCORE, up to MAX_ATTEMPTS.
+ * Replays already-generated text through `onDelta` in small chunks so a document answer
+ * still reads as "typing" rather than appearing all at once. Document answers must be
+ * generated and judged in full before we commit to them (see below), so they can't stream
+ * live the way the fallback does — this reproduces the streaming feel without it.
+ */
+async function replay(text: string, onDelta?: (text: string) => void): Promise<void> {
+  if (!onDelta) return;
+  const tokens = text.match(/\S+\s*/g) ?? [text];
+  for (let i = 0; i < tokens.length; i += REPLAY_BATCH_WORDS) {
+    onDelta(tokens.slice(i, i + REPLAY_BATCH_WORDS).join(""));
+    await new Promise((resolve) => setTimeout(resolve, REPLAY_DELAY_MS));
+  }
+}
+
+/**
+ * Tiered answering: try the user's documents first, and only if they don't cover the
+ * question fall back to general knowledge + web search.
  *
- * Only the first attempt streams live (`onDelta`) — retries run silently and, if one of
- * them wins, are delivered via `onReplace` in one shot instead of restreaming. Live-
- * streaming every retry meant the user visibly watched an answer get typed out, wiped,
- * and retyped up to 3 times before the final (sometimes still weak) answer landed — a
- * jarring "it's looping" experience for exactly the ambiguous/weakly-grounded queries
- * where retries actually fire. Silently retrying and swapping in the final result once
- * gives the same up-to-3-attempts self-correction without that flicker.
+ * 1. Documents (up to MAX_DOC_ATTEMPTS, refining the search query between tries): a
+ *    grounded answer is generated *silently* and judged (`evaluateAnswer`) before anything
+ *    is shown. It counts as a real document answer only if the judge says it actually
+ *    `answered` the question, cited excerpts, and scored well — a decline, a hedge, or an
+ *    answer that only repurposes an incidental mention does not qualify and falls through.
+ * 2. Fallback (answerFromKnowledge): general knowledge + OpenAI web search, clearly
+ *    labeled via `mode`.
  *
- * Also: if retrieval comes back with zero chunks, the LLM is never called at all for
- * that attempt — asking it to answer from nothing is exactly how it ends up
- * substituting outside knowledge (e.g. recommending generic external websites/links
- * that were never in the user's documents) instead of admitting it has nothing. A
- * confident, deterministic decline is returned directly, which also short-circuits the
- * retry loop immediately (score 10) rather than burning attempts on a case retrying
- * can't fix.
+ * Only the answer that actually wins is ever streamed to the caller — a winning document
+ * answer is replayed via `replay`, the fallback streams live. Nothing is streamed and
+ * then replaced, so the user never sees a losing answer get swapped out mid-view.
  */
 export async function answerWithRetry(
   query: string,
   history: ChatTurn[] = [],
+  userId: string,
   callbacks: AnswerWithRetryCallbacks = {},
 ): Promise<AnswerWithRetryResult> {
   const standaloneQuery = history.length > 0 ? await condenseQuery(query, history) : query;
   let searchQuery = standaloneQuery;
-  let best: AnswerWithRetryResult | undefined;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= MAX_DOC_ATTEMPTS; attempt++) {
     const analysis = await analyzeQuery(searchQuery);
     const chunks = await retrieveContext(
       [searchQuery, analysis.hyde, analysis.stepBack, ...analysis.subQuestions],
       standaloneQuery,
+      userId,
     );
 
-    let answer: string;
-    let citedChunks: RetrievedChunk[];
-    let score: number;
-
     if (chunks.length === 0) {
-      answer = NO_CONTEXT_ANSWER;
-      citedChunks = [];
-      score = 10;
-      if (attempt === 1) callbacks.onDelta?.(answer);
-    } else {
-      answer = await answerQuestion(query, chunks, history, attempt === 1 ? callbacks.onDelta : undefined);
-      ({ score, citedChunks } = await evaluateAnswer(query, answer, chunks));
+      if (attempt < MAX_DOC_ATTEMPTS) {
+        searchQuery = await refineQuery(standaloneQuery, "No matching documents were found.");
+        continue;
+      }
+      break;
     }
 
-    const result: AnswerWithRetryResult = { answer, citedChunks, score, attempts: attempt };
-    if (!best || score > best.score) best = result;
+    const answer = await answerQuestion(query, chunks, history);
+    const { answered, score, citedChunks } = await evaluateAnswer(query, answer, chunks, history);
 
-    if (score >= MIN_ACCEPTABLE_SCORE) {
-      if (best.attempts !== 1) callbacks.onReplace?.(best.answer);
-      return best;
+    if (answered && citedChunks.length > 0 && score >= MIN_ACCEPTABLE_SCORE) {
+      await replay(answer, callbacks.onDelta);
+      return { answer, mode: "documents", citedChunks, webSources: [] };
     }
 
-    if (attempt < MAX_ATTEMPTS) {
+    if (attempt < MAX_DOC_ATTEMPTS) {
       searchQuery = await refineQuery(standaloneQuery, answer);
     }
   }
 
-  if (best!.attempts !== 1) {
-    callbacks.onReplace?.(best!.answer);
-  }
-  return best!;
+  const fallback = await answerFromKnowledge(query, history, callbacks.onDelta);
+  return {
+    answer: fallback.answer,
+    mode: fallback.mode,
+    citedChunks: [],
+    webSources: fallback.webSources,
+  };
 }

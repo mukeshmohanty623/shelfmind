@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { env } from "@/lib/env";
 import type { RetrievedChunk } from "@/lib/rag/retrieve";
+import type { ChatTurn } from "@/types/chat";
 
 const JUDGE_MODEL = "gpt-4o-mini";
 
@@ -14,27 +15,39 @@ function getClient(): OpenAI {
 }
 
 const SYSTEM_PROMPT = `You grade one answer produced by a RAG system against the question it was
-asked and the excerpts it had available, and identify which excerpts it actually drew on.
+asked and the excerpts it had available.
 
-Score 0-10 on how well the answer actually addresses the question using only those excerpts.
-A confident, correct "the documents don't cover this" is a GOOD answer when the excerpts really
-don't address the question — score it high (8-10), not low. Only score low when the answer is
-vague, evasive despite relevant excerpts being available, unsupported by the excerpts, or
-contradicts them.
+"answered" is a boolean: true ONLY if the answer directly and confidently answers the user's
+actual question using the excerpts. Set it FALSE if the answer declines, says it can't answer,
+hedges ("I can't provide a definitive suggestion", "the documents don't explicitly state..."),
+only mentions excerpt content tangentially without actually answering what was asked, or punts.
+A correct, confident "that isn't in your documents" decline is answered=FALSE (it's an honest
+non-answer — good behavior, but it did not answer the question).
+
+Also set answered=FALSE when the question asks for a RECOMMENDATION, SUGGESTION, OPINION, or advice
+about what to do (e.g. "suggest a job portal she can apply on", "which tool should I use", "where
+should she look") and the answer only works by REPURPOSING an incidental mention from the excerpts
+into that recommendation — e.g. the excerpts list "Naukri / LinkedIn Recruiter" as tools the person
+USED in a past job, and the answer recasts those as portals they SHOULD now apply on. The excerpts
+describing something is not the same as the excerpts recommending it; that kind of stretch is not a
+real answer to a request for a recommendation.
+
+Score 0-10 on how well the answer addresses the question using only those excerpts. A correct
+decline scores high (8-10) even though answered=false. Score low when the answer is evasive
+despite relevant excerpts being available, unsupported, or contradicts the excerpts.
 
 Score 0-2 (not just "low") if the answer states any specific fact, name, number, URL,
-recommendation, or suggestion that is not actually present in the excerpts — e.g. recommending
-external websites/tools/platforms, or continuing to elaborate on something from earlier
-conversation turns that the current excerpts don't support. That's a fabrication, not a partial
-answer, regardless of how plausible or helpful it sounds.
+recommendation, or suggestion not actually present in the excerpts — e.g. recommending external
+websites/tools/platforms, or elaborating on something from earlier conversation turns the current
+excerpts don't support. That's a fabrication regardless of how plausible or helpful it sounds.
 
 "usedExcerpts" is the list of excerpt numbers (the "[N]" labels) whose content the answer actually
-draws on — not every excerpt shown to you, only the ones genuinely reflected in the answer's
-claims. Empty if the answer couldn't be grounded in any of them.
+draws on — only the ones genuinely reflected in the answer's claims. Empty if none.
 
 Respond with ONLY a JSON object matching the given schema.`;
 
 interface EvaluationSchema {
+  answered: boolean;
   score: number;
   usedExcerpts: number[];
 }
@@ -47,10 +60,11 @@ const RESPONSE_SCHEMA = {
     schema: {
       type: "object",
       properties: {
+        answered: { type: "boolean" },
         score: { type: "integer" },
         usedExcerpts: { type: "array", items: { type: "integer" } },
       },
-      required: ["score", "usedExcerpts"],
+      required: ["answered", "score", "usedExcerpts"],
       additionalProperties: false,
     },
   },
@@ -63,7 +77,16 @@ function formatExcerpts(chunks: RetrievedChunk[]): string {
     .join("\n\n");
 }
 
+function formatHistory(history: ChatTurn[]): string {
+  if (history.length === 0) return "";
+  const turns = history
+    .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.text}`)
+    .join("\n");
+  return `Conversation so far (for resolving references like "those"/"it" in the question):\n${turns}\n\n`;
+}
+
 export interface AnswerEvaluation {
+  answered: boolean;
   score: number;
   citedChunks: RetrievedChunk[];
 }
@@ -80,6 +103,7 @@ export async function evaluateAnswer(
   query: string,
   answer: string,
   chunks: RetrievedChunk[],
+  history: ChatTurn[] = [],
 ): Promise<AnswerEvaluation> {
   try {
     const openai = getClient();
@@ -89,7 +113,7 @@ export async function evaluateAnswer(
         { role: "system", content: SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Question: ${query}\n\nExcerpts:\n${formatExcerpts(chunks)}\n\nAnswer: ${answer}`,
+          content: `${formatHistory(history)}Question: ${query}\n\nExcerpts:\n${formatExcerpts(chunks)}\n\nAnswer: ${answer}`,
         },
       ],
       temperature: 0,
@@ -97,7 +121,7 @@ export async function evaluateAnswer(
     });
 
     const raw = response.choices[0]?.message.content;
-    if (!raw) return { score: 10, citedChunks: [] };
+    if (!raw) return { answered: false, score: 10, citedChunks: [] };
 
     const parsed = JSON.parse(raw) as EvaluationSchema;
     const score = Math.max(0, Math.min(10, Math.round(parsed.score)));
@@ -105,10 +129,11 @@ export async function evaluateAnswer(
       .map((n) => chunks[n - 1])
       .filter((chunk): chunk is RetrievedChunk => chunk !== undefined);
 
-    return { score, citedChunks };
+    return { answered: parsed.answered === true, score, citedChunks };
   } catch {
-    // A judge failure shouldn't block the answer from reaching the user — treat it as a
-    // pass so the retry loop doesn't burn attempts on an unrelated API hiccup.
-    return { score: 10, citedChunks: [] };
+    // A judge failure shouldn't block a document answer that was already generated from
+    // real excerpts — treat it as a pass (answered) so an unrelated API hiccup doesn't
+    // needlessly bounce the user to the general/web fallback.
+    return { answered: true, score: 10, citedChunks: [] };
   }
 }

@@ -23,11 +23,11 @@ async function writeAll(resources: Resource[]): Promise<void> {
   await writeFile(STORE_PATH, JSON.stringify(resources, null, 2), "utf-8");
 }
 
-export async function listResources(): Promise<Resource[]> {
+export async function listResources(userId: string): Promise<Resource[]> {
   const resources = await readAll();
-  return resources.sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
+  return resources
+    .filter((resource) => resource.userId === userId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 export async function addResource(resource: Resource): Promise<void> {
@@ -39,17 +39,27 @@ export async function addResource(resource: Resource): Promise<void> {
   await writeChain;
 }
 
-export async function getResource(id: string): Promise<Resource | undefined> {
+export async function getResource(id: string, userId: string): Promise<Resource | undefined> {
   const resources = await readAll();
-  return resources.find((resource) => resource.id === id);
+  return resources.find((resource) => resource.id === id && resource.userId === userId);
 }
 
-export async function removeResource(id: string): Promise<Resource | undefined> {
+export async function getResourceByJobId(
+  jobId: string,
+  userId: string,
+): Promise<Resource | undefined> {
+  const resources = await readAll();
+  return resources.find((resource) => resource.jobId === jobId && resource.userId === userId);
+}
+
+export async function removeResource(id: string, userId: string): Promise<Resource | undefined> {
   let removed: Resource | undefined;
   writeChain = writeChain.then(async () => {
     const resources = await readAll();
-    removed = resources.find((resource) => resource.id === id);
-    await writeAll(resources.filter((resource) => resource.id !== id));
+    removed = resources.find((resource) => resource.id === id && resource.userId === userId);
+    await writeAll(
+      resources.filter((resource) => !(resource.id === id && resource.userId === userId)),
+    );
   });
   await writeChain;
   return removed;

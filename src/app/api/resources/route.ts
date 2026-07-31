@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
+import { auth } from "@clerk/nextjs/server";
 import { listResources, addResource } from "@/lib/resources/store";
 import { getIndexQueue } from "@/lib/queue/indexQueue";
 import { fetchHtml } from "@/lib/web/fetchHtml";
@@ -9,33 +10,42 @@ import { generateTitle } from "@/lib/llm/generateTitle";
 const MAX_TEXT_LENGTH = 100_000;
 
 export async function GET() {
-  const resources = await listResources();
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const resources = await listResources(userId);
   return NextResponse.json({ resources });
 }
 
 export async function POST(request: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const formData = await request.formData();
   const file = formData.get("file");
   const url = formData.get("url");
   const text = formData.get("text");
 
   if (typeof url === "string" && url.trim()) {
-    return handleUrlResource(url.trim());
+    return handleUrlResource(url.trim(), userId);
   }
 
   if (typeof text === "string" && text.trim()) {
     const title = formData.get("title");
-    return handleTextResource(text, typeof title === "string" ? title.trim() : "");
+    return handleTextResource(text, typeof title === "string" ? title.trim() : "", userId);
   }
 
   if (file instanceof File) {
-    return handlePdfResource(file);
+    return handlePdfResource(file, userId);
   }
 
   return NextResponse.json({ error: "Provide a PDF file, a URL, or pasted text" }, { status: 400 });
 }
 
-async function handlePdfResource(file: File) {
+async function handlePdfResource(file: File, userId: string) {
   if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
     return NextResponse.json({ error: "Only PDF files are supported" }, { status: 400 });
   }
@@ -48,6 +58,7 @@ async function handlePdfResource(file: File) {
   const job = await queue.add("index-pdf", {
     type: "pdf",
     resourceId,
+    userId,
     filename: file.name,
     fileBase64,
   });
@@ -58,6 +69,7 @@ async function handlePdfResource(file: File) {
 
   await addResource({
     id: resourceId,
+    userId,
     filename: file.name,
     jobId: job.id,
     createdAt: new Date().toISOString(),
@@ -66,13 +78,14 @@ async function handlePdfResource(file: File) {
 
   return NextResponse.json({
     id: resourceId,
+    userId,
     jobId: job.id,
     filename: file.name,
     sourceType: "pdf",
   });
 }
 
-async function handleUrlResource(rawUrl: string) {
+async function handleUrlResource(rawUrl: string, userId: string) {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -100,6 +113,7 @@ async function handleUrlResource(rawUrl: string) {
   const job = await queue.add("index-url", {
     type: "url",
     resourceId,
+    userId,
     url: parsed.toString(),
     html,
   });
@@ -110,6 +124,7 @@ async function handleUrlResource(rawUrl: string) {
 
   await addResource({
     id: resourceId,
+    userId,
     filename: displayName,
     jobId: job.id,
     createdAt: new Date().toISOString(),
@@ -120,6 +135,7 @@ async function handleUrlResource(rawUrl: string) {
 
   return NextResponse.json({
     id: resourceId,
+    userId,
     jobId: job.id,
     filename: displayName,
     sourceType: "url",
@@ -128,7 +144,7 @@ async function handleUrlResource(rawUrl: string) {
   });
 }
 
-async function handleTextResource(rawText: string, providedTitle: string) {
+async function handleTextResource(rawText: string, providedTitle: string, userId: string) {
   const text = rawText.trim();
 
   if (text.length > MAX_TEXT_LENGTH) {
@@ -155,6 +171,7 @@ async function handleTextResource(rawText: string, providedTitle: string) {
   const job = await queue.add("index-text", {
     type: "text",
     resourceId,
+    userId,
     filename: title,
     text,
   });
@@ -165,6 +182,7 @@ async function handleTextResource(rawText: string, providedTitle: string) {
 
   await addResource({
     id: resourceId,
+    userId,
     filename: title,
     jobId: job.id,
     createdAt: new Date().toISOString(),
@@ -173,6 +191,7 @@ async function handleTextResource(rawText: string, providedTitle: string) {
 
   return NextResponse.json({
     id: resourceId,
+    userId,
     jobId: job.id,
     filename: title,
     sourceType: "text",

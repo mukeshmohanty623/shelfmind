@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
+    "@clerk/nextjs": "^7.6.3",
+    "@clerk/ui": "^1.27.1",
     "@qdrant/js-client-rest": "^1.18.0",
     "@tailwindcss/typography": "^0.5.20",
     "bullmq": "^5.81.2",

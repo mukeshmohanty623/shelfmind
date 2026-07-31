@@ -15,7 +15,7 @@ import type {
 export async function processUrlJob(
   job: Job<IndexResourceJobData, IndexResourceJobResult>,
 ): Promise<IndexResourceJobResult> {
-  const { resourceId, url, html } = job.data as IndexUrlJobData;
+  const { resourceId, userId, url, html } = job.data as IndexUrlJobData;
 
   await job.updateProgress(10);
   const { title, text } = extractReadableText(html, url);
@@ -44,6 +44,7 @@ export async function processUrlJob(
       vector: vectors[index],
       payload: {
         resourceId,
+        userId,
         sourceType: "url",
         sourceUrl: url,
         filename: title ?? url,

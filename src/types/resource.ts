@@ -3,6 +3,7 @@ export type ResourceSourceType = "pdf" | "url" | "text";
 
 export interface Resource {
   id: string;
+  userId: string;
   filename: string;
   jobId: string;
   createdAt: string;
@@ -14,6 +15,7 @@ export interface Resource {
 export interface IndexPdfJobData {
   type: "pdf";
   resourceId: string;
+  userId: string;
   filename: string;
   fileBase64: string;
 }
@@ -21,6 +23,7 @@ export interface IndexPdfJobData {
 export interface IndexUrlJobData {
   type: "url";
   resourceId: string;
+  userId: string;
   url: string;
   html: string;
 }
@@ -28,6 +31,7 @@ export interface IndexUrlJobData {
 export interface IndexTextJobData {
   type: "text";
   resourceId: string;
+  userId: string;
   filename: string;
   text: string;
 }

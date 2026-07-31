@@ -36,12 +36,30 @@ function normalize(text: string): string {
 
 function findFilenameMatches(rawQuery: string, resources: Resource[]): Resource[] {
   const normalizedQuery = normalize(rawQuery);
+  const queryTokens = new Set(
+    rawQuery
+      .split(/[^a-zA-Z0-9]+/)
+      .filter(Boolean)
+      .map(normalize),
+  );
+
   return resources.filter((resource) => {
     const stem = resource.filename.replace(/\.[a-z0-9]+$/i, "");
     const normalizedStem = normalize(stem);
-    return (
-      normalizedStem.length >= MIN_FILENAME_TOKEN_LENGTH &&
-      normalizedQuery.includes(normalizedStem)
+    if (normalizedStem.length >= MIN_FILENAME_TOKEN_LENGTH && normalizedQuery.includes(normalizedStem)) {
+      return true;
+    }
+
+    // Compound filenames (e.g. "Preeti_Raikwar_2026.pdf") also match on any single
+    // significant word from the stem, so a multi-entity question ("tell me about X and
+    // Y") force-includes a resource even when only part of its filename is mentioned,
+    // rather than requiring the full stem to appear verbatim.
+    const stemTokens = stem
+      .split(/[^a-zA-Z0-9]+/)
+      .filter(Boolean)
+      .map(normalize);
+    return stemTokens.some(
+      (token) => token.length >= MIN_FILENAME_TOKEN_LENGTH && queryTokens.has(token),
     );
   });
 }
@@ -50,7 +68,23 @@ function findFilenameMatches(rawQuery: string, resources: Resource[]): Resource[
 // have no filename for findFilenameMatches to catch, and (worse) send pure-semantic
 // ranking chasing a HyDE hallucination for a query with no real topic — resolving them
 // deterministically from listResources()'s existing recency order sidesteps both.
-const RECENCY_PHRASE = /\b(?:just|recently)\s+(?:uploaded|added|indexed)\b|\b(?:last|latest|most\s+recent(?:ly)?)\s+(?:uploaded|added|upload)\b/i;
+// The recency word and the upload verb are often separated by the resource noun
+// ("latest doc I have uploaded", "most recent file I added"), so each pattern allows a
+// short gap rather than requiring adjacency.
+const RECENCY_NOUNS = "docs?|documents?|files?|pdfs?|uploads?|resources?|links?|urls?|websites?|videos?|notes?|articles?|ones?";
+const RECENCY_PHRASE = new RegExp(
+  [
+    // "just/recently/lately uploaded/added/indexed"
+    `\\b(?:just|recently|lately)\\s+(?:uploaded|added|imported|indexed)\\b`,
+    // "latest/last/newest/most recent [up to 3 words] <resource noun>"
+    `\\b(?:latest|last|newest|most\\s+recent(?:ly)?)\\s+(?:\\w+\\s+){0,3}?(?:${RECENCY_NOUNS})\\b`,
+    // "latest/last/newest/most recent [up to 4 words] I (just/recently/have) uploaded/added"
+    `\\b(?:latest|last|newest|most\\s+recent(?:ly)?)\\b(?:\\s+\\w+){0,4}?\\s+i\\s+(?:just\\s+|recently\\s+|have\\s+|'?ve\\s+)?(?:uploaded|added|imported)\\b`,
+    // "upload(ed)/add(ed) [up to 2 words] recently/lately/just now/last/most recently"
+    `\\b(?:upload(?:ed)?|add(?:ed)?|import(?:ed)?|indexed)\\s+(?:\\w+\\s+){0,2}(?:most\\s+recently|recently|lately|just\\s+now|last)\\b`,
+  ].join("|"),
+  "i",
+);
 
 const TYPE_KEYWORDS: { pattern: RegExp; sourceType: ResourceSourceType }[] = [
   { pattern: /\bpdf\b/i, sourceType: "pdf" },
@@ -72,6 +106,7 @@ function findRecencyMatch(rawQuery: string, resources: Resource[]): Resource | u
 
 interface ChunkPayload {
   resourceId: string;
+  userId: string;
   sourceType: ResourceSourceType;
   filename: string;
   sourceUrl?: string;
@@ -94,11 +129,15 @@ export interface RetrievedChunk {
 export async function retrieveContext(
   variants: string[],
   rawQuery: string,
+  userId: string,
 ): Promise<RetrievedChunk[]> {
   const uniqueVariants = [...new Set(variants.map((v) => v.trim()).filter(Boolean))];
   if (uniqueVariants.length === 0) return [];
 
-  const [vectors, resources] = await Promise.all([embedTexts(uniqueVariants), listResources()]);
+  const [vectors, resources] = await Promise.all([
+    embedTexts(uniqueVariants),
+    listResources(userId),
+  ]);
   const queryVectorIndex = uniqueVariants.indexOf(rawQuery.trim());
   const queryVector = vectors[queryVectorIndex] ?? vectors[0];
 
@@ -109,6 +148,7 @@ export async function retrieveContext(
       limit: SEARCH_LIMIT_PER_VARIANT,
       with_payload: true,
       score_threshold: SCORE_THRESHOLD,
+      filter: { must: [{ key: "userId", match: { value: userId } }] },
     })),
   });
 
@@ -149,7 +189,12 @@ export async function retrieveContext(
         const [hit] = await client.search(env.qdrantCollection, {
           vector: queryVector,
           limit: 1,
-          filter: { must: [{ key: "resourceId", match: { value: resource.id } }] },
+          filter: {
+            must: [
+              { key: "resourceId", match: { value: resource.id } },
+              { key: "userId", match: { value: userId } },
+            ],
+          },
           with_payload: true,
         });
         if (!hit) return undefined;
@@ -197,7 +242,7 @@ export async function retrieveContext(
 
   const resolved = await Promise.all(
     ranked.map(async (chunk) => {
-      const resource = await getResource(chunk.resourceId);
+      const resource = await getResource(chunk.resourceId, userId);
       if (!resource) return chunk;
       return {
         ...chunk,

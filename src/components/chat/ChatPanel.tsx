@@ -4,23 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChatMessageView } from "@/components/chat/ChatMessageView";
 import { ChatInput } from "@/components/chat/ChatInput";
-import type { ChatAssistantMessage, ChatMessage, ChatSource, ChatTurn } from "@/types/chat";
+import type { ChatAssistantMessage, ChatMessage, ChatTurn } from "@/types/chat";
 import type { Resource } from "@/types/resource";
 
 const MAX_HISTORY_MESSAGES = 6;
-
-const SEED_MESSAGES: ChatMessage[] = [
-  {
-    id: "seed-user-1",
-    role: "user",
-    text: "Hi, tell me about the PDF I just uploaded?",
-  },
-  {
-    id: "seed-assistant-1",
-    role: "assistant",
-    text: 'The document you uploaded is titled "Beyond Digital Money: Making It Real," a paper on programmable assets.\n\nIt covers how digital assets are moving beyond simple currency into areas like property deeds and contracts, and what this shift means for the future of banking.',
-  },
-];
 
 const THINKING_LABELS = ["Thinking...", "Researching...", "Reading your sources..."];
 
@@ -36,7 +23,7 @@ function updateMessage(
 
 function buildHistory(messages: ChatMessage[]): ChatTurn[] {
   return messages
-    .filter((m) => !m.id.startsWith("seed-") && m.text.trim().length > 0)
+    .filter((m) => m.text.trim().length > 0)
     .slice(-MAX_HISTORY_MESSAGES)
     .map((m) => ({ role: m.role, text: m.text }));
 }
@@ -78,13 +65,15 @@ async function streamChatResponse(
         setMessages((prev) =>
           updateMessage(prev, assistantId, (m) => ({ ...m, text: m.text + data.text })),
         );
-      } else if (event === "replace") {
-        setMessages((prev) =>
-          updateMessage(prev, assistantId, (m) => ({ ...m, text: data.text })),
-        );
       } else if (event === "sources") {
-        const sources: ChatSource[] = data.sources;
-        setMessages((prev) => updateMessage(prev, assistantId, (m) => ({ ...m, sources })));
+        setMessages((prev) =>
+          updateMessage(prev, assistantId, (m) => ({
+            ...m,
+            mode: data.mode,
+            sources: data.sources,
+            webSources: data.webSources,
+          })),
+        );
       } else if (event === "error") {
         setMessages((prev) =>
           updateMessage(prev, assistantId, (m) => ({
@@ -100,7 +89,7 @@ async function streamChatResponse(
 }
 
 export function ChatPanel() {
-  const [messages, setMessages] = useState<ChatMessage[]>(SEED_MESSAGES);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sourceCount, setSourceCount] = useState(0);
   const [thinkingLabel, setThinkingLabel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);

@@ -15,13 +15,23 @@ export interface ChatSource {
   chunkIndex: number;
 }
 
+export interface WebSource {
+  url: string;
+  title: string;
+}
+
+/** Where an assistant answer came from: the user's documents, general knowledge, or web search. */
+export type AnswerMode = "documents" | "general" | "web";
+
 export interface ChatAssistantMessage {
   id: string;
   role: "assistant";
   /** Markdown, appended to incrementally while streaming. */
   text: string;
   isStreaming?: boolean;
+  mode?: AnswerMode;
   sources?: ChatSource[];
+  webSources?: WebSource[];
 }
 
 export type ChatMessage = ChatUserMessage | ChatAssistantMessage;

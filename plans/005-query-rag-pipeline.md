@@ -103,6 +103,21 @@ Decisions made with the user up front:
    uploaded", no video resource type exists) degrades to an honest decline with no
    sources rather than fabricating an answer; no regression on the filename-lookup or
    out-of-scope-decline cases re-verified above.
+
+   **Follow-up fix to the recency detector**: the first `findRecencyMatch()` regex
+   required the recency word to sit *immediately* before the upload verb
+   (`latest uploaded`, `last upload`), so a natural phrasing like "tell me about the
+   latest doc I have uploaded" — with the resource noun between "latest" and "uploaded"
+   — didn't match, fell through to pure semantic search, and HyDE hallucination returned
+   the *oldest* resource instead of the newest. Rewrote `RECENCY_PHRASE` as four
+   alternated patterns tolerant of a short gap between the recency word and the
+   verb/noun ("latest \<noun\>", "\<recency\> ... I (just/recently/have) uploaded",
+   "just/recently uploaded", "uploaded ... recently/most recently"). Unit-tested against
+   10 should-match phrasings and 6 should-NOT-match content queries (e.g. "the latest
+   best practices in the document", "the latest version of the API") — no false
+   positives on content queries that merely contain "latest"/"recent". Live-verified
+   "tell me about latest doc I have uploaded" now correctly returns the actual
+   most-recent upload.
 4. **Grounded answer generation** (`src/lib/llm/answerQuestion.ts`): `gpt-4o-mini`
    with a system prompt instructing it to silently analyze the numbered context
    excerpts before answering, answer only from context, and admit when the context

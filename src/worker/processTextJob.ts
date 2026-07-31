@@ -14,7 +14,7 @@ import type {
 export async function processTextJob(
   job: Job<IndexResourceJobData, IndexResourceJobResult>,
 ): Promise<IndexResourceJobResult> {
-  const { resourceId, filename, text } = job.data as IndexTextJobData;
+  const { resourceId, userId, filename, text } = job.data as IndexTextJobData;
 
   await job.updateProgress(10);
   const chunks = chunkText(text);
@@ -36,6 +36,7 @@ export async function processTextJob(
       vector: vectors[index],
       payload: {
         resourceId,
+        userId,
         sourceType: "text",
         filename,
         chunkIndex: index,

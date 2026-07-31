@@ -15,7 +15,7 @@ import type {
 export async function processPdfJob(
   job: Job<IndexResourceJobData, IndexResourceJobResult>,
 ): Promise<IndexResourceJobResult> {
-  const { resourceId, filename, fileBase64 } = job.data as IndexPdfJobData;
+  const { resourceId, userId, filename, fileBase64 } = job.data as IndexPdfJobData;
 
   await job.updateProgress(10);
   const buffer = Buffer.from(fileBase64, "base64");
@@ -51,6 +51,7 @@ export async function processPdfJob(
       vector: vectors[index],
       payload: {
         resourceId,
+        userId,
         sourceType: "pdf",
         filename,
         chunkIndex: index,

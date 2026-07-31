@@ -1,4 +1,5 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { answerWithRetry } from "@/lib/rag/answerWithRetry";
 import type { ChatSource, ChatTurn } from "@/types/chat";
 import type { RetrievedChunk } from "@/lib/rag/retrieve";
@@ -32,6 +33,11 @@ function parseHistory(raw: unknown): ChatTurn[] {
 }
 
 export async function POST(request: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const body = await request.json().catch(() => null);
   const query = typeof body?.query === "string" ? body.query.trim() : "";
   const history = parseHistory(body?.history);
@@ -52,12 +58,15 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        const result = await answerWithRetry(query, history, {
+        const result = await answerWithRetry(query, history, userId, {
           onDelta: (text) => send("delta", { text }),
-          onReplace: (fullAnswer) => send("replace", { text: fullAnswer }),
         });
 
-        send("sources", { sources: toSources(result.citedChunks) });
+        send("sources", {
+          mode: result.mode,
+          sources: toSources(result.citedChunks),
+          webSources: result.webSources,
+        });
         send("done", {});
       } catch (err) {
         console.error("chat query failed", err);
